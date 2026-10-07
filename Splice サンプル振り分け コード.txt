@@ -1,0 +1,560 @@
+& {
+    Set-StrictMode -Version 2.0
+
+    # ============================================================
+    # Splice Sample Organizer - Final Safety Version
+    # Windows 10 / 11 + PowerShell 5.1 以降を想定
+    #
+    # 【重要】
+    # ・元ファイルは削除・移動しません。
+    # ・指定した保存先へ「コピー」のみを行います。
+    # ・自動判定のため、振り分けが100%正確である保証はありません。
+    # ・重要なデータは事前にバックアップしてください。
+    # ・Mac / Linux は対象外です。
+    # ============================================================
+
+    function Write-Section([string]$Text, [ConsoleColor]$Color = [ConsoleColor]::Cyan) {
+        Write-Host ""
+        Write-Host "==============================================" -ForegroundColor $Color
+        Write-Host $Text -ForegroundColor $Color
+        Write-Host "==============================================" -ForegroundColor $Color
+    }
+
+    function Normalize-FullPath([string]$Path) {
+        $full = [System.IO.Path]::GetFullPath($Path)
+        $root = [System.IO.Path]::GetPathRoot($full)
+        if ($full -ne $root) {
+            $full = $full.TrimEnd('\')
+        }
+        return $full
+    }
+
+    function Is-ChildPath([string]$Child, [string]$Parent) {
+        $childFull  = Normalize-FullPath $Child
+        $parentFull = Normalize-FullPath $Parent
+        if ($childFull -eq $parentFull) { return $false }
+        return $childFull.StartsWith($parentFull.TrimEnd('\') + '\', [System.StringComparison]::OrdinalIgnoreCase)
+    }
+
+    # ------------------------------------------------------------
+    # 0. Windows / PowerShell 環境チェック
+    # ------------------------------------------------------------
+    Write-Section "Splice Sample Organizer - Final Safety Version"
+
+    if ([System.Environment]::OSVersion.Platform -ne [System.PlatformID]::Win32NT) {
+        Write-Host "このスクリプトは Windows 10 / 11 用です。" -ForegroundColor Red
+        Write-Host "Mac / Linux では実行しないでください。" -ForegroundColor Yellow
+        return
+    }
+
+    if ($PSVersionTable.PSVersion.Major -lt 5) {
+        Write-Host "PowerShell 5.1 以降が必要です。" -ForegroundColor Red
+        Write-Host ("現在のバージョン: " + $PSVersionTable.PSVersion.ToString()) -ForegroundColor Yellow
+        return
+    }
+
+    try {
+        Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+    }
+    catch {
+        Write-Host "フォルダー選択画面を読み込めませんでした。" -ForegroundColor Red
+        Write-Host $_.Exception.Message -ForegroundColor Yellow
+        return
+    }
+
+    Write-Host ""
+    Write-Host "【注意】" -ForegroundColor Yellow
+    Write-Host "・元ファイルは削除・移動しません。"
+    Write-Host "・保存先へのコピーのみ行います。"
+    Write-Host "・自動分類のため誤分類の可能性があります。"
+    Write-Host "・重要なデータは事前にバックアップしてください。"
+    Write-Host ""
+
+    function Select-Folder([string]$Description) {
+        $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+        $dialog.Description = $Description
+        $dialog.ShowNewFolderButton = $true
+
+        $result = $dialog.ShowDialog()
+        if ($result -ne [System.Windows.Forms.DialogResult]::OK) {
+            return $null
+        }
+        return $dialog.SelectedPath
+    }
+
+    # ------------------------------------------------------------
+    # 1. 元フォルダー選択
+    # ------------------------------------------------------------
+    $source = Select-Folder "① 整理したい Splice の Samples フォルダーを選択してください。`n`n例：ドキュメント → Splice → Samples → OK"
+    if ([string]::IsNullOrWhiteSpace($source)) {
+        Write-Host "元フォルダーの選択をキャンセルしました。" -ForegroundColor Yellow
+        return
+    }
+
+    # ------------------------------------------------------------
+    # 2. 保存先選択
+    # ------------------------------------------------------------
+    $destinationRoot = Select-Folder "② 整理後のサンプルを保存するフォルダーを選択してください。`n`n例：ミュージック → Splice DL 2026 → OK`n`n※フォルダー名は自由です。"
+    if ([string]::IsNullOrWhiteSpace($destinationRoot)) {
+        Write-Host "保存先の選択をキャンセルしました。" -ForegroundColor Yellow
+        return
+    }
+
+    try {
+        $sourceFull = Normalize-FullPath $source
+        $destFull   = Normalize-FullPath $destinationRoot
+    }
+    catch {
+        Write-Host "フォルダーパスを正しく読み取れませんでした。" -ForegroundColor Red
+        Write-Host $_.Exception.Message -ForegroundColor Yellow
+        return
+    }
+
+    if (-not (Test-Path -LiteralPath $sourceFull -PathType Container)) {
+        Write-Host "元フォルダーが見つかりません。" -ForegroundColor Red
+        Write-Host $sourceFull
+        return
+    }
+
+    if (-not (Test-Path -LiteralPath $destFull -PathType Container)) {
+        Write-Host "保存先フォルダーが見つかりません。" -ForegroundColor Red
+        Write-Host $destFull
+        return
+    }
+
+    # 元と保存先が同じ、または親子関係になっている場合は停止
+    if ($sourceFull -eq $destFull) {
+        Write-Host "元フォルダーと保存先に同じフォルダーは指定できません。" -ForegroundColor Red
+        return
+    }
+
+    if ((Is-ChildPath $destFull $sourceFull) -or (Is-ChildPath $sourceFull $destFull)) {
+        Write-Host "元フォルダーと保存先を親子関係にすることはできません。" -ForegroundColor Red
+        Write-Host "別の場所に保存先フォルダーを作成してください。" -ForegroundColor Yellow
+        return
+    }
+
+    # ------------------------------------------------------------
+    # 3. モード選択
+    # ------------------------------------------------------------
+    Write-Host ""
+    Write-Host "実行モードを選択してください。" -ForegroundColor Cyan
+    Write-Host "  1 : 確認だけ（コピーしない）"
+    Write-Host "  2 : 確認後にコピー"
+    Write-Host "  0 : 終了"
+    Write-Host ""
+
+    do {
+        $mode = Read-Host "番号を入力"
+    } while ($mode -notin @("0", "1", "2"))
+
+    if ($mode -eq "0") {
+        Write-Host "終了しました。"
+        return
+    }
+
+    # ------------------------------------------------------------
+    # 4. カテゴリー / 対象拡張子
+    # ------------------------------------------------------------
+    $folders = @(
+        "01_KICK",
+        "02_SNARE",
+        "03_CLAP",
+        "04_RIM",
+        "05_HIHAT",
+        "06_CRASH",
+        "07_TAMBOURINE",
+        "08_PERC",
+        "09_808",
+        "10_BASS",
+        "11_LOOP",
+        "12_VOCAL",
+        "13_ATMOSPHERE",
+        "14_FX",
+        "15_OTHER"
+    )
+
+    $audioExtensions = @(
+        ".wav",
+        ".aif",
+        ".aiff",
+        ".mp3",
+        ".flac",
+        ".ogg"
+    )
+
+    function Normalize-Text([string]$Text) {
+        if ($null -eq $Text) { return "" }
+        $Text = $Text.ToLowerInvariant()
+        $Text = $Text -replace '[_\-.]', ' '
+        $Text = $Text -replace '\s+', ' '
+        return $Text.Trim()
+    }
+
+    function Get-CategoryFromFileName([System.IO.FileInfo]$File) {
+        $text = Normalize-Text $File.BaseName
+
+        # Loop を最優先
+        if ($text -match '\b(loop|loops)\b') { return "11_LOOP" }
+
+        if ($text -match '\b(kick|kicks|kickdrum|kick drum)\b') { return "01_KICK" }
+        if ($text -match '\b(snare|snares|snr)\b') { return "02_SNARE" }
+        if ($text -match '\b(clap|claps)\b') { return "03_CLAP" }
+        if ($text -match '\b(rim|rims|rimshot|rimshots)\b') { return "04_RIM" }
+
+        if (
+            $text -match '\b(hihat|hihats|hi hat|hi hats|hat|hats)\b' -or
+            $text -match '\b(open hat|open hats|closed hat|closed hats)\b'
+        ) { return "05_HIHAT" }
+
+        if ($text -match '\b(crash|crashes|cymbal|cymbals|ride|rides)\b') { return "06_CRASH" }
+        if ($text -match '\b(tambourine|tambourines|tamb|tambs)\b') { return "07_TAMBOURINE" }
+
+        # 808 Kick は上の Kick 判定に入る。その他の 808 はここ。
+        if ($text -match '\b808\b') { return "09_808" }
+
+        if ($text -match '\b(bass|basses|subbass|sub bass)\b') { return "10_BASS" }
+        if ($text -match '\b(perc|percs|percussion)\b') { return "08_PERC" }
+        if ($text -match '\b(vocal|vocals|vox|voice|voices)\b') { return "12_VOCAL" }
+
+        if ($text -match '\b(atmosphere|atmospheres|atmo|ambient|ambience|texture|textures)\b') {
+            return "13_ATMOSPHERE"
+        }
+
+        if ($text -match '\b(fx|sfx|effect|effects|riser|risers|impact|impacts|uplifter|uplifters|downlifter|downlifters|transition|transitions|sweep|sweeps)\b') {
+            return "14_FX"
+        }
+
+        return $null
+    }
+
+    function Get-CategoryFromFolder([string]$FolderName) {
+        $text = Normalize-Text $FolderName
+
+        switch -Regex ($text) {
+            '^(kick|kicks|kick drum|kick drums|808 kicks)$' { return "01_KICK" }
+            '^(snare|snares)$' { return "02_SNARE" }
+            '^(clap|claps)$' { return "03_CLAP" }
+            '^(rim|rims|rimshot|rimshots)$' { return "04_RIM" }
+            '^(hat|hats|hihat|hihats|hi hat|hi hats|open hat|open hats|closed hat|closed hats)$' { return "05_HIHAT" }
+            '^(crash|crashes|cymbal|cymbals|ride|rides)$' { return "06_CRASH" }
+            '^(tambourine|tambourines|tamb|tambs)$' { return "07_TAMBOURINE" }
+            '^(perc|percs|percussion)$' { return "08_PERC" }
+            '^(808|808s)$' { return "09_808" }
+            '^(bass|basses|sub bass|subbass)$' { return "10_BASS" }
+            '^(loop|loops)$' { return "11_LOOP" }
+            '^(vocal|vocals|vox|voice|voices)$' { return "12_VOCAL" }
+            '^(atmosphere|atmospheres|atmo|ambient|ambience|texture|textures)$' { return "13_ATMOSPHERE" }
+            '^(fx|sfx|effect|effects|riser|risers|impact|impacts|transition|transitions|sweep|sweeps)$' { return "14_FX" }
+        }
+
+        return $null
+    }
+
+    function Get-Category([System.IO.FileInfo]$File) {
+        # 1. ファイル名を最優先
+        $category = Get-CategoryFromFileName $File
+        if ($category) { return $category }
+
+        # 2. 判定できない場合のみ、親フォルダーを最深部から確認
+        $currentFolder = $File.Directory
+
+        while ($currentFolder -and $currentFolder.FullName.StartsWith($sourceFull, [System.StringComparison]::OrdinalIgnoreCase)) {
+            $category = Get-CategoryFromFolder $currentFolder.Name
+            if ($category) { return $category }
+
+            if ((Normalize-FullPath $currentFolder.FullName) -eq $sourceFull) {
+                break
+            }
+
+            $currentFolder = $currentFolder.Parent
+        }
+
+        return "15_OTHER"
+    }
+
+    # ------------------------------------------------------------
+    # 5. 元ファイル検索
+    # ------------------------------------------------------------
+    Write-Section "音声ファイルを検索しています"
+
+    $scanErrors = @()
+    $files = @(
+        Get-ChildItem -LiteralPath $sourceFull -File -Recurse -ErrorAction SilentlyContinue -ErrorVariable +scanErrors |
+        Where-Object { $audioExtensions -contains $_.Extension.ToLowerInvariant() }
+    )
+
+    if ($files.Count -eq 0) {
+        Write-Host "対象となる音声ファイルが見つかりませんでした。" -ForegroundColor Yellow
+        return
+    }
+
+    Write-Host ("見つかった音声ファイル: {0} 個" -f $files.Count)
+
+    if ($scanErrors.Count -gt 0) {
+        Write-Host ("読み取れなかった場所: {0} 件" -f $scanErrors.Count) -ForegroundColor Yellow
+        Write-Host "アクセス権限などにより一部を検索できていない可能性があります。" -ForegroundColor Yellow
+    }
+
+    # 一度分類して計画を保持
+    $plan = foreach ($file in $files) {
+        [PSCustomObject]@{
+            File     = $file
+            Category = (Get-Category $file)
+        }
+    }
+
+    # ------------------------------------------------------------
+    # 6. プレビュー
+    # ------------------------------------------------------------
+    $preview = @{}
+    foreach ($folder in $folders) { $preview[$folder] = 0 }
+    foreach ($item in $plan) { $preview[$item.Category]++ }
+
+    Write-Section "振り分け予定"
+    foreach ($folder in $folders) {
+        Write-Host ("{0,-20} : {1}" -f $folder, $preview[$folder])
+    }
+
+    Write-Host ""
+    Write-Host "元フォルダー:" -ForegroundColor Gray
+    Write-Host $sourceFull
+    Write-Host ""
+    Write-Host "保存先:" -ForegroundColor Gray
+    Write-Host $destFull
+
+    $otherItems = @($plan | Where-Object { $_.Category -eq "15_OTHER" })
+    if ($otherItems.Count -gt 0) {
+        Write-Host ""
+        Write-Host ("15_OTHER に入る予定: {0} 個" -f $otherItems.Count) -ForegroundColor Yellow
+        Write-Host "先頭30件を表示します。" -ForegroundColor Gray
+        $otherItems | Select-Object -First 30 | ForEach-Object {
+            Write-Host ("  " + $_.File.Name)
+        }
+        if ($otherItems.Count -gt 30) {
+            Write-Host ("  ...ほか {0} 個" -f ($otherItems.Count - 30)) -ForegroundColor Gray
+        }
+    }
+
+    if ($mode -eq "1") {
+        Write-Host ""
+        Write-Host "【確認モード終了】" -ForegroundColor Green
+        Write-Host "ファイルのコピー、移動、削除、フォルダー作成は行っていません。"
+        return
+    }
+
+    # ------------------------------------------------------------
+    # 7. 実行前の最終確認
+    # ------------------------------------------------------------
+    Write-Host ""
+    Write-Host "----------------------------------------------"
+    Write-Host "【最終確認】" -ForegroundColor Yellow
+    Write-Host "・元ファイルは削除・移動しません。"
+    Write-Host "・保存先へのコピーのみ行います。"
+    Write-Host "・同一内容のファイルは、名前が違っていても重複コピーしません。"
+    Write-Host "・自動分類なので誤分類の可能性があります。"
+    Write-Host "・15_OTHER は特に確認してください。"
+    Write-Host "----------------------------------------------"
+    Write-Host ""
+
+    $answer = Read-Host "コピーを実行する場合のみ YES と入力してください"
+    if ($answer -cne "YES") {
+        Write-Host "コピーは実行されませんでした。" -ForegroundColor Yellow
+        return
+    }
+
+    # ------------------------------------------------------------
+    # 8. 保存先カテゴリー作成
+    # ------------------------------------------------------------
+    try {
+        foreach ($folder in $folders) {
+            $path = Join-Path $destFull $folder
+            if (-not (Test-Path -LiteralPath $path)) {
+                New-Item -ItemType Directory -Path $path -Force -ErrorAction Stop | Out-Null
+            }
+        }
+    }
+    catch {
+        Write-Host "保存先フォルダーを作成できませんでした。" -ForegroundColor Red
+        Write-Host "アクセス権限や保存先を確認してください。" -ForegroundColor Yellow
+        Write-Host $_.Exception.Message -ForegroundColor Yellow
+        return
+    }
+
+    # ------------------------------------------------------------
+    # 9. 重複検出用インデックス
+    #    保存先15フォルダー内の既存音声を、サイズ別に記録
+    # ------------------------------------------------------------
+    $sizeIndex = @{}
+    $hashCache = @{}
+
+    function Add-ToSizeIndex([System.IO.FileInfo]$File) {
+        $key = [string]$File.Length
+        if (-not $sizeIndex.ContainsKey($key)) {
+            $sizeIndex[$key] = New-Object System.Collections.ArrayList
+        }
+        [void]$sizeIndex[$key].Add($File.FullName)
+    }
+
+    function Get-CachedHash([string]$Path) {
+        if (-not $hashCache.ContainsKey($Path)) {
+            $hashCache[$Path] = (Get-FileHash -LiteralPath $Path -Algorithm SHA256 -ErrorAction Stop).Hash
+        }
+        return $hashCache[$Path]
+    }
+
+    Write-Host ""
+    Write-Host "保存先の既存ファイルを確認しています..." -ForegroundColor Cyan
+
+    foreach ($folder in $folders) {
+        $categoryPath = Join-Path $destFull $folder
+        $existingFiles = @(
+            Get-ChildItem -LiteralPath $categoryPath -File -Recurse -ErrorAction SilentlyContinue |
+            Where-Object { $audioExtensions -contains $_.Extension.ToLowerInvariant() }
+        )
+
+        foreach ($existingFile in $existingFiles) {
+            Add-ToSizeIndex $existingFile
+        }
+    }
+
+    # ------------------------------------------------------------
+    # 10. コピー
+    # ------------------------------------------------------------
+    $log = New-Object System.Collections.ArrayList
+    $copied = 0
+    $duplicateSkipped = 0
+    $errorCount = 0
+
+    foreach ($item in $plan) {
+        $file = $item.File
+        $category = $item.Category
+
+        try {
+            $targetFolder = Join-Path $destFull $category
+
+            # ----------
+            # 内容が完全に同じファイルを検索
+            # ファイル名が違っていても SHA256 が一致すればスキップ
+            # ----------
+            $duplicatePath = $null
+            $sizeKey = [string]$file.Length
+
+            if ($sizeIndex.ContainsKey($sizeKey)) {
+                $sourceHash = Get-CachedHash $file.FullName
+
+                foreach ($existingPath in @($sizeIndex[$sizeKey])) {
+                    if (-not (Test-Path -LiteralPath $existingPath -PathType Leaf)) {
+                        continue
+                    }
+
+                    try {
+                        $existingHash = Get-CachedHash $existingPath
+                        if ($sourceHash -eq $existingHash) {
+                            $duplicatePath = $existingPath
+                            break
+                        }
+                    }
+                    catch {
+                        # 1ファイルのHash取得失敗では全体を止めない
+                    }
+                }
+            }
+
+            if ($duplicatePath) {
+                $duplicateSkipped++
+                [void]$log.Add([PSCustomObject]@{
+                    Result            = "DuplicateSkipped"
+                    Category          = $category
+                    Source            = $file.FullName
+                    Destination       = ""
+                    ExistingDuplicate = $duplicatePath
+                    Message           = "同一内容のファイルが保存先に存在するためスキップ"
+                })
+                continue
+            }
+
+            # ----------
+            # 保存名決定
+            # 同名の別ファイルがあれば _1, _2 ...
+            # ----------
+            $destination = Join-Path $targetFolder $file.Name
+
+            if (Test-Path -LiteralPath $destination) {
+                $base = [System.IO.Path]::GetFileNameWithoutExtension($file.Name)
+                $ext  = $file.Extension
+                $number = 1
+
+                do {
+                    $newName = "{0}_{1}{2}" -f $base, $number, $ext
+                    $destination = Join-Path $targetFolder $newName
+                    $number++
+                } while (Test-Path -LiteralPath $destination)
+            }
+
+            # ----------
+            # コピー
+            # ----------
+            Copy-Item -LiteralPath $file.FullName -Destination $destination -ErrorAction Stop
+            $copied++
+
+            $copiedInfo = Get-Item -LiteralPath $destination -ErrorAction Stop
+            Add-ToSizeIndex $copiedInfo
+
+            # 元ファイルのHashを既に計算済みなら、コピー先にも同じHashを登録
+            if ($hashCache.ContainsKey($file.FullName)) {
+                $hashCache[$destination] = $hashCache[$file.FullName]
+            }
+
+            [void]$log.Add([PSCustomObject]@{
+                Result            = "Copied"
+                Category          = $category
+                Source            = $file.FullName
+                Destination       = $destination
+                ExistingDuplicate = ""
+                Message           = ""
+            })
+        }
+        catch {
+            $errorCount++
+            [void]$log.Add([PSCustomObject]@{
+                Result            = "Error"
+                Category          = $category
+                Source            = $file.FullName
+                Destination       = ""
+                ExistingDuplicate = ""
+                Message           = $_.Exception.Message
+            })
+        }
+    }
+
+    # ------------------------------------------------------------
+    # 11. ログ保存
+    # ------------------------------------------------------------
+    $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+    $logPath = Join-Path $destFull ("Splice_Organizer_Log_{0}.csv" -f $timestamp)
+
+    try {
+        $log | Export-Csv -LiteralPath $logPath -NoTypeInformation -Encoding UTF8 -ErrorAction Stop
+    }
+    catch {
+        Write-Host ""
+        Write-Host "コピー処理は完了しましたが、ログを保存できませんでした。" -ForegroundColor Yellow
+        Write-Host $_.Exception.Message -ForegroundColor Yellow
+        $logPath = "（ログ保存失敗）"
+    }
+
+    # ------------------------------------------------------------
+    # 12. 完了表示
+    # ------------------------------------------------------------
+    Write-Section "処理完了" Green
+    Write-Host ("コピー                     : {0}" -f $copied)
+    Write-Host ("同一内容のためスキップ     : {0}" -f $duplicateSkipped)
+    Write-Host ("エラー                     : {0}" -f $errorCount)
+    Write-Host ""
+    Write-Host "ログ:" -ForegroundColor Gray
+    Write-Host $logPath
+    Write-Host ""
+    Write-Host "元の Splice Samples には変更を加えていません。" -ForegroundColor Green
+    Write-Host "最後に各フォルダー、特に 15_OTHER の内容を確認してください。" -ForegroundColor Yellow
+}

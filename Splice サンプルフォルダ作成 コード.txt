@@ -1,0 +1,21 @@
+﻿$folders = @(
+"01_KICK",
+"02_SNARE",
+"03_CLAP",
+"04_RIM",
+"05_HIHAT",
+"06_CRASH",
+"07_TAMBOURINE",
+"08_PERC",
+"09_808",
+"10_BASS",
+"11_LOOP",
+"12_VOCAL",
+"13_ATMOSPHERE",
+"14_FX",
+"15_OTHER"
+)
+
+foreach ($folder in $folders) {
+    New-Item -ItemType Directory -Name $folder -Force
+}
